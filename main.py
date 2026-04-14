@@ -514,7 +514,6 @@ def colnum_to_colname(n: int) -> str:
 
 LAST_COL = colnum_to_colname(len(HEADERS))
 
-
 def ensure_headers():
     service.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID,
@@ -523,15 +522,12 @@ def ensure_headers():
         body={"values": [HEADERS]}
     ).execute()
 
-
 def build_row(data: dict) -> list:
     return [data.get(k, "") for k in NORMALIZED_KEYS]
-
 
 @app.get("/")
 def home():
     return {"message": "API is running 🚀"}
-
 
 # ── Single bill ───────────────────────────────────────────────────────────────
 @app.post("/add-bill")
@@ -548,7 +544,6 @@ def add_bill(data: dict):
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
-
 # ── Multiple bills ────────────────────────────────────────────────────────────
 @app.post("/add-bills")
 def add_bills(payload: dict):
@@ -558,7 +553,6 @@ def add_bills(payload: dict):
             return JSONResponse(status_code=400, content={"success": False, "error": "No bills provided"})
 
         ensure_headers()
-
         rows = [build_row(b) for b in bills]
 
         service.spreadsheets().values().append(
