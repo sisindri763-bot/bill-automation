@@ -469,6 +469,7 @@ import json
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from typing import List
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -540,15 +541,14 @@ def add_bill(data: dict):
             valueInputOption="USER_ENTERED",
             body={"values": [build_row(data)]}
         ).execute()
-        return {"success": True}
+        return {"success": True, "inserted": 1}
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 # ── Multiple bills ────────────────────────────────────────────────────────────
 @app.post("/add-bills")
-def add_bills(payload: dict):
+def add_bills(bills: List[dict]):          # ✅ directly List[dict], no wrapper needed
     try:
-        bills = payload.get("bills", [])
         if not bills:
             return JSONResponse(status_code=400, content={"success": False, "error": "No bills provided"})
 
