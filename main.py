@@ -466,10 +466,9 @@
 import re
 import os
 import json
-
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.responses import JSONResponse
-from typing import List
+from typing import List, Dict, Any
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -478,10 +477,14 @@ app = FastAPI()
 # ── Credentials ───────────────────────────────────────────────────────────────
 if os.getenv("GOOGLE_CREDENTIALS"):
     creds = service_account.Credentials.from_service_account_info(
-        json.loads(os.getenv("GOOGLE_CREDENTIALS"))
+        json.loads(os.getenv("GOOGLE_CREDENTIALS")),
+        scopes=['https://www.googleapis.com/auth/spreadsheets']
     )
 else:
-    creds = service_account.Credentials.from_service_account_file("credentials.json")
+    creds = service_account.Credentials.from_service_account_file(
+        "credentials.json",
+        scopes=['https://www.googleapis.com/auth/spreadsheets']
+    )
 
 service = build("sheets", "v4", credentials=creds)
 
@@ -524,45 +527,43 @@ def ensure_headers():
     ).execute()
 
 def build_row(data: dict) -> list:
-    return [data.get(k, "") for k in NORMALIZED_KEYS]
+    return [str(data.get(k, "")) for k in NORMALIZED_KEYS]
 
 @app.get("/")
 def home():
     return {"message": "API is running 🚀"}
 
-# ── Single bill ───────────────────────────────────────────────────────────────
 @app.post("/add-bill")
-def add_bill(data: dict):
+def add_bill(data: Dict[str, Any] = Body(...)):
     try:
         ensure_headers()
         service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range=f"Sheet1!A:{LAST_COL}",
-            valueInputOption="USER_ENTERED",
+            valueInputOption="RAW",
             body={"values": [build_row(data)]}
         ).execute()
         return {"success": True, "inserted": 1}
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
-# ── Multiple bills ────────────────────────────────────────────────────────────
 @app.post("/add-bills")
-def add_bills(bills: List[dict]):          # ✅ directly List[dict], no wrapper needed
+def add_bills(data: Dict[str, List[Dict[str, Any]]] = Body(...)):  # ✅ {bills: List[dict]}
     try:
+        bills = data.get("bills", [])
         if not bills:
             return JSONResponse(status_code=400, content={"success": False, "error": "No bills provided"})
 
         ensure_headers()
-        rows = [build_row(b) for b in bills]
+        rows = [build_row(bill) for bill in bills]
 
         service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range=f"Sheet1!A:{LAST_COL}",
-            valueInputOption="USER_ENTERED",
+            valueInputOption="RAW",
             body={"values": rows}
         ).execute()
 
         return {"success": True, "inserted": len(rows)}
-
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
