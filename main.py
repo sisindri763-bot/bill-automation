@@ -466,17 +466,16 @@
 import re
 import os
 import json
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import List
+from typing import List, Union
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 app = FastAPI()
 
-# ── CORS ───────────────────────────────────────────────────────────────────────
+# ── CORS ─────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -485,8 +484,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Credentials ────────────────────────────────────────────────────────────────
+# ── Google Credentials ───────────────────────
 google_creds_env = os.getenv("GOOGLE_CREDENTIALS")
+
 if google_creds_env:
     creds = service_account.Credentials.from_service_account_info(
         json.loads(google_creds_env)
@@ -498,25 +498,24 @@ service = build("sheets", "v4", credentials=creds)
 
 SPREADSHEET_ID = "1Wt5QuN46nce3dbPKMRCp2HdpZFMfqAnBvGioKHh3gnU"
 
+# ── HEADERS ──────────────────────────────────
 HEADERS = [
     "Bill Date", "Bill Number", "PurchaseOrder", "Bill Status", "Source of Supply", "Destination of Supply",
     "GST Treatment", "GST Identification Number (GSTIN)", "Is Inclusive Tax", "TDS Percentage", "TDS Amount",
-    "TDS Section Code", "TDS Name", "Vendor Name", "Due Date", "Currency Code", "Exchange Rate", "Attachment ID",
-    "Attachment Preview ID", "Attachment Name", "Attachment Type", "Attachment Size", "Item Name", "SKU",
-    "Item Description", "Account", "Usage unit", "Quantity", "Rate", "Adjustment", "Item Type", "Tax Name",
-    "Tax Percentage", "Tax Amount", "Tax Type", "Item Exemption Code", "Reverse Charge Tax Name",
-    "Reverse Charge Tax Rate", "Reverse Charge Tax Type", "Item Total", "SubTotal", "Total", "Balance",
-    "Vendor Notes", "Terms & Conditions", "Payment Terms", "Payment Terms Label", "Is Billable", "Customer Name",
-    "Project Name", "Purchase Order Number", "Is Discount Before Tax", "Entity Discount Amount", "Discount Account",
-    "Is Landed Cost", "Warehouse Name", "Branch Name", "CF.Transporte_Name", "TCS Tax Name", "TCS Percentage",
-    "Nature Of Collection", "TCS Amount", "HSN/SAC", "Supply Type", "ITC Eligibility"
+    "TDS Section Code", "TDS Name", "Vendor Name", "Due Date", "Currency Code", "Exchange Rate",
+    "Attachment Type", "Item Name", "SKU", "Item Description", "Account",
+    "Quantity", "Rate", "Adjustment", "Item Type", "Tax Name", "Tax Percentage",
+    "Tax Amount", "Tax Type", "Item Exemption Code", "Item Total",
+    "SubTotal", "Total", "Balance", "Vendor Notes", "Terms & Conditions", "Payment Terms Label"
 ]
 
+# ── Normalize Keys ───────────────────────────
 def normalize_key(h: str) -> str:
     return re.sub(r'[^a-z0-9]+', '_', h.lower()).strip('_')
 
 NORMALIZED_KEYS = [normalize_key(h) for h in HEADERS]
 
+# ── Column Name Generator ────────────────────
 def colnum_to_colname(n: int) -> str:
     name = ""
     while n > 0:
@@ -526,67 +525,66 @@ def colnum_to_colname(n: int) -> str:
 
 LAST_COL = colnum_to_colname(len(HEADERS))
 
-# ── Write headers only once per instance ──────────────────────────────────────
+# ── Header Init ──────────────────────────────
 _headers_initialized = False
 
 def ensure_headers():
     global _headers_initialized
     if _headers_initialized:
         return
-    try:
-        service.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"Sheet1!A1:{LAST_COL}1",
-            valueInputOption="RAW",
-            body={"values": [HEADERS]}
-        ).execute()
-        _headers_initialized = True
-    except Exception as e:
-        raise RuntimeError(f"Failed to write headers: {e}")
+    service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"Sheet1!A1:{LAST_COL}1",
+        valueInputOption="RAW",
+        body={"values": [HEADERS]}
+    ).execute()
+    _headers_initialized = True
 
+# ── Build Row ────────────────────────────────
 def build_row(data: dict) -> list:
     return [data.get(k, "") for k in NORMALIZED_KEYS]
 
+# ── Normalize Input Keys ─────────────────────
+def normalize_input(data: dict) -> dict:
+    normalized = {}
+    for k, v in data.items():
+        nk = normalize_key(k)
+        normalized[nk] = v
+    return normalized
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# ── Routes ───────────────────────────────────
 
 @app.get("/")
 def home():
-    return {"message": "API is running 🚀"}
+    return {"message": "Invoice API running 🚀"}
 
 
-# ── Single bill ───────────────────────────────────────────────────────────────
-@app.post("/add-bill")
-def add_bill(data: dict):
-    if not data:
-        return JSONResponse(status_code=400, content={"success": False, "error": "Empty payload"})
-    try:
-        ensure_headers()
-        service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"Sheet1!A:{LAST_COL}",
-            valueInputOption="USER_ENTERED",
-            body={"values": [build_row(data)]}
-        ).execute()
-        return {"success": True, "inserted": 1}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
-
-
-# ── Multiple bills ────────────────────────────────────────────────────────────
+# ✅ SINGLE + MULTIPLE (SMART ENDPOINT)
 @app.post("/add-bills")
-def add_bills(bills: List[dict]):
-    if not bills:
-        return JSONResponse(status_code=400, content={"success": False, "error": "No bills provided"})
+def add_bills(payload: Union[dict, List[dict]]):
+
+    if not payload:
+        return JSONResponse(status_code=400, content={"success": False, "error": "Empty payload"})
+
     try:
         ensure_headers()
-        rows = [build_row(b) for b in bills]
+
+        # 🔥 Accept BOTH single and list
+        if isinstance(payload, dict):
+            bills = [payload]
+        else:
+            bills = payload
+
+        rows = [build_row(normalize_input(b)) for b in bills]
+
         service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range=f"Sheet1!A:{LAST_COL}",
             valueInputOption="USER_ENTERED",
             body={"values": rows}
         ).execute()
+
         return {"success": True, "inserted": len(rows)}
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
