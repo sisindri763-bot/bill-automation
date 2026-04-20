@@ -684,6 +684,10 @@ def build_row(data: Dict[str, Any]) -> List[Any]:
     data = normalize_input(data)
     return [data.get(k, "") for k in NORMALIZED_KEYS]
 
+# ── Check if row is empty ────────────────────
+def is_empty_row(row: List[Any]) -> bool:
+    return all(v in ("", None) for v in row)
+
 # ── Routes ───────────────────────────────────
 
 @app.get("/")
@@ -703,7 +707,18 @@ def add_bills(payload: List[Dict[str, Any]]):
     try:
         ensure_headers()
 
-        rows = [build_row(item) for item in payload]
+        # ✅ Build rows and skip empty ones
+        rows = []
+        for item in payload:
+            row = build_row(item)
+            if not is_empty_row(row):
+                rows.append(row)
+
+        if not rows:
+            return {
+                "success": False,
+                "error": "No valid data to insert"
+            }
 
         service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
