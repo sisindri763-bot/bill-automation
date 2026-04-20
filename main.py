@@ -648,9 +648,6 @@ def normalize_key(h: str) -> str:
 
 NORMALIZED_KEYS = [normalize_key(h) for h in HEADERS]
 
-# Build a set of all valid normalized keys for fast lookup
-VALID_NORMALIZED_KEYS = set(NORMALIZED_KEYS)
-
 # ── Column Generator ─────────────────────────
 def colnum_to_colname(n: int) -> str:
     name = ""
@@ -660,24 +657,6 @@ def colnum_to_colname(n: int) -> str:
     return name
 
 LAST_COL = colnum_to_colname(len(HEADERS))
-
-# ── Garbage value patterns to strip ──────────
-GARBAGE_PATTERNS = [
-    r'^\(.*\)$',            # anything in parentheses like (Missing), (Not explicitly provided)
-    r'^—$',                 # em dash placeholder
-    r'^-$',                 # dash placeholder
-    r'^N/?A$',              # N/A variants
-    r'^null$',              # null string
-    r'^none$',              # none string
-    r'^undefined$',         # undefined string
-    r'^\s*$',               # whitespace only
-]
-GARBAGE_RE = re.compile('|'.join(GARBAGE_PATTERNS), re.IGNORECASE)
-
-def is_garbage_value(v: Any) -> bool:
-    if v is None:
-        return True
-    return bool(GARBAGE_RE.match(str(v).strip()))
 
 # ── Ensure Headers Exist ─────────────────────
 _headers_initialized = False
@@ -698,16 +677,7 @@ def ensure_headers():
 
 # ── Normalize Input ──────────────────────────
 def normalize_input(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalize keys AND filter out any keys that don't match known headers.
-    This prevents unknown AI-generated fields from spilling into extra columns.
-    """
-    normalized = {}
-    for k, v in data.items():
-        nk = normalize_key(k)
-        if nk in VALID_NORMALIZED_KEYS and not is_garbage_value(v):
-            normalized[nk] = v
-    return normalized
+    return {normalize_key(k): v for k, v in data.items()}
 
 # ── Build Row ────────────────────────────────
 def build_row(data: Dict[str, Any]) -> List[Any]:
@@ -717,29 +687,6 @@ def build_row(data: Dict[str, Any]) -> List[Any]:
 # ── Check if row is empty ────────────────────
 def is_empty_row(row: List[Any]) -> bool:
     return all(v in ("", None) for v in row)
-
-# ── Deduplicate rows ──────────────────────────
-def deduplicate_rows(rows: List[List[Any]]) -> List[List[Any]]:
-    """
-    Remove exact duplicate rows. Uses tuple hashing for fast comparison.
-    Preserves first occurrence, drops subsequent identical rows.
-    """
-    seen = set()
-    unique = []
-    for row in rows:
-        key = tuple(str(v) for v in row)
-        if key not in seen:
-            seen.add(key)
-            unique.append(row)
-    return unique
-
-# ── Validate bill has minimum required fields ─
-def has_required_fields(data: Dict[str, Any]) -> bool:
-    """Bill Number and Total are required per schema."""
-    normalized = {normalize_key(k): v for k, v in data.items()}
-    bill_number = normalized.get("bill_number", "")
-    total = normalized.get("total", "")
-    return bool(bill_number and str(bill_number).strip()) or bool(total and str(total).strip())
 
 # ── Routes ───────────────────────────────────
 
@@ -760,32 +707,18 @@ def add_bills(payload: List[Dict[str, Any]]):
     try:
         ensure_headers()
 
-        # Build rows, skip empty and invalid ones
+        # ✅ Build rows and skip empty ones
         rows = []
-        skipped = 0
         for item in payload:
-            # Skip items that don't have minimum required fields
-            if not has_required_fields(item):
-                skipped += 1
-                continue
-
             row = build_row(item)
-
             if not is_empty_row(row):
                 rows.append(row)
-            else:
-                skipped += 1
 
         if not rows:
             return {
                 "success": False,
-                "error": f"No valid data to insert. {skipped} item(s) were skipped due to missing required fields."
+                "error": "No valid data to insert"
             }
-
-        # Deduplicate: remove exact duplicate rows before inserting
-        rows_before = len(rows)
-        rows = deduplicate_rows(rows)
-        duplicates_removed = rows_before - len(rows)
 
         service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
@@ -796,9 +729,7 @@ def add_bills(payload: List[Dict[str, Any]]):
 
         return {
             "success": True,
-            "inserted": len(rows),
-            "skipped": skipped,
-            "duplicates_removed": duplicates_removed
+            "inserted": len(rows)
         }
 
     except Exception as e:
